@@ -39,11 +39,17 @@ log(`==== native host starting; pid=${process.pid} pipe=${IPC_PIPE} ====`);
 // --- state ---
 let handshakeComplete = false;     // extension sent get_status (handshake done)
 let mcpConnectedSent = false;      // we've told the extension the bridge is up
-let mcpClient = null;              // the connected MCP server (net socket)
+const mcpClients = new Set();      // all connected MCP servers (support multiple concurrent)
+const reqIdToClient = new Map();   // reqId -> the client socket that sent it (for response routing)
 let pendingReqId = null;           // reqId currently in flight to the extension
 const queue = [];                  // pending IPC tool_requests waiting for the extension
 
 function sendToExt(obj) { writeFrame(process.stdout, obj); }
+
+// broadcast a framed IPC message to ALL connected MCP clients
+function broadcastToMcp(obj) {
+  for (const c of mcpClients) { try { writeFrame(c, obj); } catch {} }
+}
 
 // --- extension side (stdin) ---
 const feedExt = makeFrameReader((msg) => {
@@ -57,16 +63,19 @@ const feedExt = makeFrameReader((msg) => {
       onHandshakeComplete();
     }
   } else if (msg.type === "tool_response") {
-    // extension finished the in-flight request. pair with pendingReqId, relay to MCP.
+    // extension finished the in-flight request. pair with pendingReqId, route to the
+    // owning client (not a broadcast — only the requester gets the response).
     const reqId = pendingReqId;
     pendingReqId = null;
     const isError = !!(msg.result && msg.result.error) || !!(msg.error);
     const result = msg.error || msg.result;
-    if (reqId != null && mcpClient) {
-      writeFrame(mcpClient, ipcToolResponse(reqId, result, isError));
-      log(`>> mcp: tool_response reqId=${reqId} isError=${isError}`);
+    const owner = reqId != null ? reqIdToClient.get(reqId) : null;
+    if (reqId != null) reqIdToClient.delete(reqId);
+    if (owner && mcpClients.has(owner)) {
+      writeFrame(owner, ipcToolResponse(reqId, result, isError));
+      log(`>> mcp: tool_response reqId=${reqId} isError=${isError} (routed to client)`);
     } else {
-      log(`!! tool_response with no pending reqId (reqId=${reqId}, mcpClient=${!!mcpClient})`);
+      log(`!! tool_response reqId=${reqId} with no live owner client (owner=${!!owner})`);
     }
     pumpQueue();
   } else {
@@ -95,34 +104,45 @@ function pumpQueue() {
 function onHandshakeComplete() {
   if (!mcpConnectedSent) { mcpConnectedSent = true; sendToExt(extMcpConnected()); }
   log("== extension handshake complete; mcp_connected sent ==");
-  // the bridge is now usable: tell the MCP client (if connected) and drain any queued requests
-  if (mcpClient) writeFrame(mcpClient, ipcBridgeReady());
+  // the bridge is now usable: tell ALL connected MCP clients and drain any queued requests
+  broadcastToMcp(ipcBridgeReady());
   pumpQueue();
 }
 
-// --- IPC side (named pipe server, MCP client connects) ---
+// --- IPC side (named pipe server, MCP clients connect) ---
+// Supports MULTIPLE concurrent MCP clients. Each gets bridge_ready on connect
+// (or when the handshake completes later). tool_response is routed by reqId to
+// the owning client. This fixes the bug where a second MCP client (e.g. a test
+// driver) would end() the session's long-lived client and corrupt its state.
 const srv = createServer((sock) => {
   log("== mcp client connected to IPC pipe");
-  if (mcpClient) { try { mcpClient.end(); } catch {} }
-  mcpClient = sock;
+  mcpClients.add(sock);
   // bridge_ready is sent once the extension handshake is done. If the MCP
   // client connects after handshake, send now; otherwise onHandshakeComplete
-  // will send it when the extension becomes ready.
-  if (mcpConnectedSent) writeFrame(sock, ipcBridgeReady());
+  // will broadcast it when the extension becomes ready.
+  if (mcpConnectedSent) { try { writeFrame(sock, ipcBridgeReady()); } catch {} }
   const feed = makeFrameReader((msg) => {
     if (msg.type === "tool_request" && msg.reqId != null && msg.tool) {
       log(`<< mcp: tool_request reqId=${msg.reqId} tool=${msg.tool}`);
+      reqIdToClient.set(msg.reqId, sock);
       queue.push({ reqId: msg.reqId, tool: msg.tool, args: msg.args || {} });
       pumpQueue();
     } else if (msg.type === "ping") {
-      writeFrame(sock, { type: "pong", timestamp: Date.now() });
+      try { writeFrame(sock, { type: "pong", timestamp: Date.now() }); } catch {}
     } else {
       log(`?? unknown ipc msg: ${JSON.stringify(msg).slice(0, 200)}`);
     }
   }, (e, text) => log(`!! ipc frame parse error: ${e.message}`));
   sock.on("data", feed);
   sock.on("error", (e) => log(`!! ipc sock error: ${e.message}`));
-  sock.on("end", () => { log("== mcp client disconnected"); if (mcpClient === sock) mcpClient = null; });
+  sock.on("end", () => {
+    log("== mcp client disconnected");
+    mcpClients.delete(sock);
+    // drop any reqId ownership pointing at this client (the in-flight request,
+    // if any, stays in the queue/extension and its response will be logged as
+    // no-live-owner — harmless).
+    for (const [rid, c] of reqIdToClient) if (c === sock) reqIdToClient.delete(rid);
+  });
 });
 srv.on("error", (e) => log(`!! ipc server error: ${e.message}`));
 srv.listen(IPC_PIPE, () => log(`== IPC listening on ${IPC_PIPE}`));
@@ -133,7 +153,10 @@ function shutdown(reason) {
   if (exiting) return;
   exiting = true;
   log(`== native host shutting down: ${reason}`);
-  if (mcpClient) { try { writeFrame(mcpClient, ipcBridgeGone(reason)); mcpClient.end(); } catch {} }
+  broadcastToMcp(ipcBridgeGone(reason));
+  for (const c of mcpClients) { try { c.end(); } catch {} }
+  mcpClients.clear();
+  reqIdToClient.clear();
   try { srv.close(); } catch {}
   try { process.exit(0); } catch {}
 }

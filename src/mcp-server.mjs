@@ -93,7 +93,10 @@ function handleIpc(msg) {
       pending.delete(msg.reqId);
       clearTimeout(p.timer);
       log(`<< tool_response reqId=${msg.reqId} isError=${!!msg.isError}`);
-      p.resolve({ result: msg.result, isError: !!msg.isError });
+      // translate the extension's result.content into MCP content, then resolve
+      // with the {content, isError} shape that callTool's caller expects.
+      const content = extensionResultToMcpContent(msg.result || {});
+      p.resolve({ content, isError: !!msg.isError });
     }
   } else if (msg.type === "pong") {
     // liveness ack

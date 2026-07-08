@@ -91,7 +91,8 @@ node test/drive-mcp-server.mjs call computer '{"action":"screenshot","tabId":123
 
 - ✅ MCP server `initialize` + `tools/list` (all 22 tools, protocol `2025-06-18`).
 - ✅ Native host: extension handshake (`ping`/`get_status`/`mcp_connected`) + IPC pipe + one-in-flight relay.
-- ✅ End-to-end `tools/call` flow (see `test/`).
+- ✅ End-to-end `tools/call` flow **proven ungated** (no claude.ai login): `tabs_context_mcp` → `get_page_text` → `javascript_tool` (javascript_exec), all relayed through the bridge.
+- ✅ `javascript_exec` reads SPA page content that `get_page_text` misses: on a `cloud.tencent.com` doc page, `get_page_text` returned 250 chars (marketing shell only); `javascript_exec` (wait + `innerText` extract) returned 1011 chars including the real API-action list the SPA loads async. So for JS-rendered pages, prefer `javascript_exec`.
 - Reversible: restore the manifest `path` to the original `chrome-native-host.bat` to return to the gated CLI host; `chrome.storage.local.remove("permissionStorage")` to undo the seed.
 
 ## How it was reverse-engineered

@@ -1,0 +1,9 @@
+{
+  "name": "com.anthropic.claude_code_browser_extension",
+  "description": "chrome-mcp-bridge (ungated) — drives the Claude Chrome extension via MCP. Replaces the gated CLI native host.",
+  "path": "C:\\Users\\kllam\\.claude\\chrome\\chrome-native-host-bridge.bat",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://fcoeoabgfenejglbffodgkkbkcdhcgfn/"
+  ]
+}

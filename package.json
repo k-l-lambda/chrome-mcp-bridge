@@ -1,0 +1,17 @@
+{
+  "name": "chrome-mcp-bridge",
+  "version": "0.1.0",
+  "description": "Ungated reimplementation of the Claude-in-Chrome MCP bridge. Exposes the same 22 browser tools to any MCP client, driving the official Chrome extension via native messaging — no claude.ai login required.",
+  "type": "module",
+  "bin": {
+    "chrome-mcp-native-host": "src/native-host.mjs",
+    "chrome-mcp-server": "src/mcp-server.mjs"
+  },
+  "scripts": {
+    "native-host": "node src/native-host.mjs",
+    "mcp": "node src/mcp-server.mjs",
+    "test:list-tools": "node test/drive-mcp-server.mjs list"
+  },
+  "engines": { "node": ">=18" },
+  "license": "MIT"
+}
